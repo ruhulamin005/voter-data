@@ -8,10 +8,20 @@
  *   পেশা: <occupation>, জন্ম তারিখ: <dob>
  *   ঠিকানা: <address>
  *
- * Parsing strategy: locate each Bangla field label in the block text,
- * sort the positions, then slice the value between consecutive labels.
- * This avoids relying on newlines (which collapse after normalisation)
- * or character-class exclusions (which silently drop partial matches).
+ * ── Key PDF encoding quirk ──────────────────────────────────────────────────
+ * This PDF stores glyphs in *visual* (left-to-right rendering) order rather
+ * than Unicode logical order.  Pre-base vowel signs (ি U+09BF, ে U+09C7)
+ * appear visually to the LEFT of the consonant they modify, so pdfjs-dist
+ * emits them BEFORE that consonant:
+ *
+ *   পিতা  →  িপতা   (ি displaced before প)
+ *   পেশা  →  িপশা   (ে/ি displaced before প)
+ *   ঠিকানা →  িঠকানা  (ি displaced before ঠ)
+ *   জন্ম   →  mangled (hasanta cluster not decoded reliably)
+ *
+ * Every label regex below accepts BOTH the correct Unicode form AND the
+ * visual-order form that pdfjs-dist actually produces for this font.
+ * ────────────────────────────────────────────────────────────────────────────
  */
 
 import { VoterRecord, ParseResult } from "../types";
@@ -23,8 +33,7 @@ import {
 } from "./textNormalizer";
 
 // ---------------------------------------------------------------------------
-// Label definitions — order does not matter; we sort by match position.
-// Each pattern anchors at the label keyword so it can't double-match.
+// Label definitions
 // ---------------------------------------------------------------------------
 
 interface LabelDef {
@@ -33,28 +42,40 @@ interface LabelDef {
 }
 
 const LABEL_DEFS: LabelDef[] = [
-  // Serial+name header: "০০০১। নাম:" or "0001. নাম:"
+  // নাম — no pre-base vowels, stable in any encoding
   { key: "name",       re: /নাম\s*[:：]\s*/g },
-  // Voter number: ভোটার / ভাটার (CID variant)
+
+  // ভোটার নং — ো is compound (ে+া); pdfjs keeps it intact for this word
   { key: "voterNo",    re: /ভ[োা]টার\s*নং\s*[:：]\s*/g },
-  { key: "father",     re: /পিতা\s*[:：]\s*/g },
+
+  // পিতা  ←→  িপতা  (ি pre-base, displaced before প)
+  { key: "father",     re: /[িে]?প[িে]?তা\s*[:：]\s*/g },
+
+  // মাতা — no pre-base vowels, stable
   { key: "mother",     re: /মাতা\s*[:：]\s*/g },
-  { key: "occupation", re: /পেশা\s*[:：]\s*/g },
-  // DOB may appear on same line as occupation: "পেশা: ব্যবসা, জন্ম তারিখ: ০২/০৩/১৯৮৬"
-  { key: "dob",        re: /জন্ম\s*তারিখ\s*[:：]\s*/g },
-  { key: "address",    re: /ঠিকানা\s*[:：]\s*/g },
+
+  // পেশা  ←→  িপশা / েপশা  (ে pre-base, may appear as ি due to font map)
+  { key: "occupation", re: /[িে]?প[িে]?শা\s*[:：]\s*/g },
+
+  // জন্ম তারিখ — জন্ম cluster is unreliably decoded; anchor only on "তারিখ"
+  // which survives intact.  Optional leading "জ<anything> " to consume the
+  // garbled জন্ম prefix when it is present.
+  { key: "dob",        re: /(?:জ\S*\s+)?তারিখ\s*[:：]\s*/g },
+
+  // ঠিকানা  ←→  িঠকানা  (ি pre-base, displaced before ঠ)
+  { key: "address",    re: /[িে]?ঠ[িে]?কানা\s*[:：]\s*/g },
 ];
+
+// ---------------------------------------------------------------------------
+// Label position finder
+// ---------------------------------------------------------------------------
 
 interface LabelPosition {
   key: string;
   start: number;
-  valueStart: number; // index immediately after the colon+space
+  valueStart: number; // index immediately after the label+colon
 }
 
-/**
- * Locate every known label in `text` and return them sorted by position.
- * We use RegExp.exec with sticky lastIndex so each label is found once.
- */
 function findLabels(text: string): LabelPosition[] {
   const positions: LabelPosition[] = [];
 
@@ -73,26 +94,22 @@ function findLabels(text: string): LabelPosition[] {
   return positions.sort((a, b) => a.start - b.start);
 }
 
-/**
- * Given a sorted label list, return the value text for `key`:
- * everything from valueStart up to the next label's start.
- */
-function extractBetweenLabels(
+/** Return cleaned text from this label's valueStart to the next label's start. */
+function sliceField(
   text: string,
   labels: LabelPosition[],
   key: string
 ): string {
   const idx = labels.findIndex((l) => l.key === key);
   if (idx === -1) return "";
-
   const { valueStart } = labels[idx];
-  const nextStart = idx + 1 < labels.length ? labels[idx + 1].start : text.length;
-
+  const nextStart =
+    idx + 1 < labels.length ? labels[idx + 1].start : text.length;
   return cleanFieldValue(text.slice(valueStart, nextStart));
 }
 
 // ---------------------------------------------------------------------------
-// Metadata extraction from header pages
+// Metadata extraction
 // ---------------------------------------------------------------------------
 
 function extractMetadata(text: string): ParseResult["metadata"] {
@@ -109,7 +126,9 @@ function extractMetadata(text: string): ParseResult["metadata"] {
   metadata.voterArea   = m(/ভ[োা]টার\s+এলাকার\s+নাম\s*[:：]\s*([^\n]+)/);
   metadata.publishDate = m(/প্রকাশের?\s+তারিখ\s*[:：]\s*([^\n]+)/);
 
-  const codeMatch = text.match(/ভ[োা]টার\s+এলাকার\s+(?:নম্বর|কোড|নং)\s*[:：]\s*([০-৯\d]+)/);
+  const codeMatch = text.match(
+    /ভ[োা]টার\s+এলাকার\s+(?:নম্বর|কোড|নং)\s*[:：]\s*([০-৯\d]+)/
+  );
   if (codeMatch) metadata.voterAreaCode = banglaToAsciiDigits(codeMatch[1]);
 
   return metadata;
@@ -119,15 +138,10 @@ function extractMetadata(text: string): ParseResult["metadata"] {
 // Split page text into per-voter chunks
 // ---------------------------------------------------------------------------
 
-/**
- * Each voter block starts with a 4-digit Bangla/ASCII serial followed by
- * "।" (Devanagari danda) or "." then optional space then "নাম:".
- * We find all such anchors and slice between them.
- */
 function splitIntoVoterChunks(
   text: string
 ): Array<{ serial: string; block: string }> {
-  // Accept: ০০০১। নাম:  or  0001. নাম:  or  ০০০১. নাম:
+  // Matches: "০০০১। নাম:"  or  "0001. নাম:"  (both separators, both digit scripts)
   const SPLIT_RE = /([০-৯\d]{3,4})\s*[।.]\s*নাম\s*[:：]/g;
 
   const positions: Array<{ serial: string; start: number }> = [];
@@ -140,22 +154,17 @@ function splitIntoVoterChunks(
     });
   }
 
-  const chunks: Array<{ serial: string; block: string }> = [];
-  for (let i = 0; i < positions.length; i++) {
-    const start = positions[i].start;
-    const end =
-      i + 1 < positions.length ? positions[i + 1].start : text.length;
-    chunks.push({
-      serial: positions[i].serial,
-      block: text.slice(start, end),
-    });
-  }
-
-  return chunks;
+  return positions.map((pos, i) => ({
+    serial: pos.serial,
+    block: text.slice(
+      pos.start,
+      i + 1 < positions.length ? positions[i + 1].start : text.length
+    ),
+  }));
 }
 
 // ---------------------------------------------------------------------------
-// Parse a single voter block
+// Parse one voter block
 // ---------------------------------------------------------------------------
 
 function parseVoterBlock(
@@ -163,48 +172,54 @@ function parseVoterBlock(
   block: string,
   index: number
 ): VoterRecord | null {
-  // Collapse whitespace (including newlines) to single spaces so that
-  // label positions are stable regardless of line-break placement.
+  // Collapse all whitespace (including newlines) so label positions are stable.
   const text = normalizeBanglaText(block);
 
   const labels = findLabels(text);
 
-  // ---- name ---------------------------------------------------------------
-  const name = extractBetweenLabels(text, labels, "name");
+  // ── name ──────────────────────────────────────────────────────────────────
+  const name = sliceField(text, labels, "name");
 
-  // ---- voter number -------------------------------------------------------
-  const rawVoterNo = extractBetweenLabels(text, labels, "voterNo");
-  // Keep only the digit run (drop any stray prefix characters)
-  const voterNoDigits = banglaToAsciiDigits(rawVoterNo).replace(/\D/g, "");
-  const voterNo = voterNoDigits.length >= 10 ? voterNoDigits : rawVoterNo;
+  // ── voter number ──────────────────────────────────────────────────────────
+  const rawVoterNo = sliceField(text, labels, "voterNo");
+  // Keep only the digit run; accept Bangla or ASCII digits
+  const voterDigits = banglaToAsciiDigits(rawVoterNo).replace(/\D/g, "");
+  const voterNo = voterDigits.length >= 10 ? voterDigits : rawVoterNo;
 
-  // ---- father / mother ----------------------------------------------------
-  const fatherName = extractBetweenLabels(text, labels, "father");
-  const motherName = extractBetweenLabels(text, labels, "mother");
+  // ── father ────────────────────────────────────────────────────────────────
+  const fatherName = sliceField(text, labels, "father");
 
-  // ---- occupation + DOB (may share one line) ------------------------------
-  let occupation = extractBetweenLabels(text, labels, "occupation");
-  let dob = extractBetweenLabels(text, labels, "dob");
+  // ── mother ────────────────────────────────────────────────────────────────
+  const motherName = sliceField(text, labels, "mother");
 
-  // If DOB was not found as a standalone label, it might be embedded in the
-  // occupation value: "ব্যবসা, জন্ম তারিখ: ০২/০৩/১৯৮৬"
+  // ── occupation ────────────────────────────────────────────────────────────
+  let occupation = sliceField(text, labels, "occupation");
+  // When পেশা and তারিখ are on the same line the occupation slice contains
+  // a trailing ", জন্ম " (or its garbled form "জ<X> ").  Strip it.
+  // Pattern: last comma followed by optional space + জ<any> to end-of-value
+  occupation = occupation.replace(/[,،,]\s*জ\S*\s*$/, "").trim();
+  // Also strip a plain trailing comma/space
+  occupation = occupation.replace(/[,\s]+$/, "").trim();
+
+  // ── date of birth ─────────────────────────────────────────────────────────
+  let dob = sliceField(text, labels, "dob");
+
+  // If তারিখ label was not found but occupation still contains a date string,
+  // extract it from there as a fallback.
   if (!dob) {
-    const embedded = /জন্ম\s*তারিখ\s*[:：]\s*([^\s,]+)/.exec(occupation);
+    const embedded = /(\d{2}[\/\-]\d{2}[\/\-]\d{4}|[০-৯]{2}[\/\-][০-৯]{2}[\/\-][০-৯]{4})/.exec(
+      occupation
+    );
     if (embedded) {
-      dob = cleanFieldValue(embedded[1]);
-      // Trim occupation at the জন্ম তারিখ label
-      occupation = cleanFieldValue(
-        occupation.slice(0, occupation.indexOf("জন্ম"))
-      );
+      dob = embedded[1];
+      occupation = occupation.slice(0, embedded.index).replace(/[,\s]+$/, "").trim();
     }
   }
 
-  // Strip trailing comma/space from occupation (e.g. "ব্যবসা,")
-  occupation = occupation.replace(/[,،,\s]+$/, "").trim();
   dob = dob ? normalizeDate(dob) : "";
 
-  // ---- address ------------------------------------------------------------
-  const address = extractBetweenLabels(text, labels, "address");
+  // ── address ───────────────────────────────────────────────────────────────
+  const address = sliceField(text, labels, "address");
 
   if (!name && !voterNo) return null;
 
@@ -247,9 +262,7 @@ export function extractVoters(rawPages: string[]): ParseResult {
         const voter = parseVoterBlock(serial, block, globalIndex++);
         if (voter) voters.push(voter);
       } catch (err) {
-        errors.push(
-          `Page ${pageIdx + 1}, serial ${serial}: ${String(err)}`
-        );
+        errors.push(`Page ${pageIdx + 1}, serial ${serial}: ${String(err)}`);
       }
     }
   }
