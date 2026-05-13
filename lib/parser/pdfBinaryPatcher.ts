@@ -15,14 +15,17 @@
  * continues to work even if patching fails.
  */
 
-// CID → correct Unicode codepoint corrections.
-// Keys are the hex CID as it appears in the CMap (e.g. "00CF" for CID 207).
-// Values are the correct Unicode hex string (e.g. "09C7" for ে).
+// CID corrections for ToUnicode CMap entries in font OZHNWW+Bangla.
+// Keys: zero-padded 4-digit uppercase hex CID.
+// Values: concatenated Unicode hex codepoints (no spaces).
 const TOUNICODE_CORRECTIONS: Record<string, string> = {
-  "00CF": "09C7", // CID 207: ো → ে  (pre-base vowel, most critical — ~90x/page)
-  "00FD": "09CD09AF", // CID 253: ঞ → ঞ্জ  (কেরানীগঞ্জ)
-  "012D": "09A8099C", // CID 301 placeholder — skip if not present
-  // Additional corrections can be added here as they are confirmed.
+  // CID 207 (0x00CF): ToUnicode says ো (U+09CB) — actual glyph is the pre-base
+  // visual ে (U+09C7). Most impactful: fixes বেগম→বিগম, বেসরকারী, কেরানীগঞ্জ, etc.
+  "00CF": "09C7",
+
+  // CID 253 (0x00FD): ToUnicode says ঞ (U+099E) — actual glyph is conjunct
+  // ঞ্জ (U+099E U+09CD U+099C). Fixes কেরানীগঞ্জ losing its trailing জ.
+  "00FD": "099E09CD099C",
 };
 
 // ---------------------------------------------------------------------------
@@ -98,8 +101,11 @@ function patchCmapContent(content: string): { patched: string; changed: boolean 
     // CMap entries look like: <00CF> <09CB>
     // We replace any occurrence of <CID> <WRONG> with <CID> <CORRECT>.
     // We don't know the wrong value, so we replace any <CID> <????> pattern.
-    const re = new RegExp(`<${cidHex}>\\s+<[0-9A-Fa-f]+>`, "g");
-    const replacement = `<${cidHex}> <${correctHex}>`;
+    // Case-insensitive: CMaps may use <00CF> or <00cf>
+    const re = new RegExp(`<${cidHex}>\\s+<[0-9A-Fa-f]+>`, "gi");
+    const upperCid = cidHex.toUpperCase();
+    const upperVal = correctHex.toUpperCase();
+    const replacement = `<${upperCid}> <${upperVal}>`;
     const next = result.replace(re, replacement);
     if (next !== result) {
       result = next;

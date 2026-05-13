@@ -147,8 +147,11 @@ const RE_PREBASE = new RegExp(
   "([\\u09BF\\u09C7])([" + BENG_CONSONANTS + "])",
   "g"
 );
+// After binary-patching the PDF, CID 207 maps to ে (U+09C7) instead of ি.
+// So ো is now encoded as consonant + ে + া rather than consonant + ি + া.
+// Accept both forms to handle both patched and unpatched PDFs.
 const RE_I_AA = new RegExp(
-  "([" + BENG_CONSONANTS + "])\\u09BF\\u09BE",
+  "([" + BENG_CONSONANTS + "])[\\u09BF\\u09C7]\\u09BE",
   "g"
 );
 
@@ -159,8 +162,9 @@ export function reshapeVisualOrder(text: string): string {
   //   িপতা → পিতা,  িঠকানা → ঠিকানা,  িভিট → ভিটি
   let result = text.replace(RE_PREBASE, "$2$1");
 
-  // Step 2 — reconstruct ো: consonant + ি + া → consonant + ো
-  //   মোঃ was extracted as িমাঃ; step 1 gives মিাঃ; here মিা → মো
+  // Step 2 — reconstruct ো: consonant + (ি|ে) + া → consonant + ো
+  //   Unpatched PDF: িমাঃ → step1: মিাঃ → here মিা → মোঃ
+  //   Patched PDF:   েমাঃ → step1: মোঃ → here মো → মোঃ
   result = result.replace(RE_I_AA, "$1ো"); // ো = ো
 
   // NFC collapses any ে+া two-char sequences into the ো precomposed form
