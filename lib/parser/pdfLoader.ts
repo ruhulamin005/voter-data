@@ -6,7 +6,6 @@
 import type { ParseResult } from "../types";
 import { replaceCidArtifacts } from "./textNormalizer";
 import { extractVoters } from "./voterExtractor";
-import { patchPdfBinary } from "./pdfBinaryPatcher";
 
 export type ProgressCallback = (current: number, total: number, stage: string) => void;
 
@@ -26,11 +25,7 @@ export async function extractTextFromPdf(
 ): Promise<string[]> {
   const pdfjsLib = await loadPdfJs();
 
-  const rawBuffer = await file.arrayBuffer();
-  // Patch incorrect ToUnicode CMap entries in the embedded Bengali font so
-  // pdfjs maps CID 207 to ে (U+09C7) instead of ো (U+09CB). This fixes
-  // standalone ে in names like বেগম → বেগম (previously: বিগম).
-  const arrayBuffer = await patchPdfBinary(rawBuffer);
+  const arrayBuffer = await file.arrayBuffer();
   const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
   const pdf = await loadingTask.promise;
 
