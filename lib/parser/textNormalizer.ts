@@ -99,3 +99,42 @@ export function cleanFieldValue(value: string): string {
     .replace(/[:\s।,]+$/, "")
     .trim();
 }
+
+// ---------------------------------------------------------------------------
+// Visual-order → logical-order reshaping
+// ---------------------------------------------------------------------------
+// This PDF stores glyphs in visual (left-to-right render) order.
+// Pre-base vowel signs ি (U+09BF) and ে (U+09C7) appear BEFORE the
+// consonant they modify in the byte stream, but Unicode logical order
+// requires them AFTER.  Additionally, this font maps ে → ি, so the
+// compound vowel ো (ে+া) arrives as ি before the consonant then া after,
+// which we detect and reunite.
+//
+// Apply this to display values AFTER parsing is complete — the parser
+// relies on visual-order label patterns (িপতা, িপশা, িঠকানা …) to locate
+// fields, so reshaping must not happen before label detection.
+
+// Bengali consonant character class (U+0995–U+09B9 + specials)
+const BC = "ক-হৎড়-য়ৰৱ";
+
+export function reshapeVisualOrder(text: string): string {
+  if (!text) return text;
+
+  // Step 1 — reorder: pre-base vowel + consonant  →  consonant + vowel
+  //   িপতা → পিতা,  িঠকানা → ঠিকানা,  িভিট → ভিটি …
+  let result = text.replace(
+    new RegExp(`([িে])([${BC}])`, "g"),
+    "$2$1"
+  );
+
+  // Step 2 — reconstruct ো: consonant + ি + া  →  consonant + ো
+  //   The font encodes ে as ি, so মোঃ comes out as িমাঃ.
+  //   After step 1 that becomes মিাঃ; here we reunite মিা → মো.
+  result = result.replace(
+    new RegExp(`([${BC}])িা`, "g"),
+    "$1ো"
+  );
+
+  // NFC: collapses any ে+া that survived as two code-points into ো
+  return result.normalize("NFC");
+}

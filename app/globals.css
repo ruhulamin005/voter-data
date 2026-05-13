@@ -24,3 +24,11 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Bengali text — Noto Sans Bengali renders the Unicode correctly */
+.bn {
+  font-family: var(--font-bengali), "Noto Sans Bengali", "Hind Siliguri",
+    "Mukti", sans-serif;
+  font-feature-settings: "liga" 1, "kern" 1;
+  line-height: 1.7; /* Bengali descenders need extra room */
+}

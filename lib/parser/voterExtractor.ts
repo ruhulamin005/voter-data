@@ -30,6 +30,7 @@ import {
   cleanFieldValue,
   normalizeDate,
   banglaToAsciiDigits,
+  reshapeVisualOrder,
 } from "./textNormalizer";
 
 // ---------------------------------------------------------------------------
@@ -227,12 +228,13 @@ function parseVoterBlock(
     id: `voter-${index}-${serial}`,
     serialNo: serial,
     voterNo,
-    name,
-    fatherName,
-    motherName,
-    occupation,
-    dob,
-    address,
+    // Reshape visual-order glyphs to correct Unicode logical order for display
+    name:       reshapeVisualOrder(name),
+    fatherName: reshapeVisualOrder(fatherName),
+    motherName: reshapeVisualOrder(motherName),
+    occupation: reshapeVisualOrder(occupation),
+    dob,        // digits + slashes only — no reshaping needed
+    address:    reshapeVisualOrder(address),
   };
 }
 

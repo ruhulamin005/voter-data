@@ -37,22 +37,28 @@ const columns = [
     header: "Name (নাম)",
     size: 160,
     cell: (info) => (
-      <span className="font-semibold text-gray-900">{info.getValue()}</span>
+      <span className="bn font-semibold text-gray-900">{info.getValue()}</span>
     ),
   }),
   columnHelper.accessor("fatherName", {
     header: "Father (পিতা)",
     size: 140,
+    cell: (info) => (
+      <span className="bn">{info.getValue() || "—"}</span>
+    ),
   }),
   columnHelper.accessor("motherName", {
     header: "Mother (মাতা)",
     size: 140,
+    cell: (info) => (
+      <span className="bn">{info.getValue() || "—"}</span>
+    ),
   }),
   columnHelper.accessor("occupation", {
     header: "Occupation",
     size: 120,
     cell: (info) => (
-      <span className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded text-xs">
+      <span className="bn px-2 py-0.5 bg-gray-100 text-gray-700 rounded text-xs">
         {info.getValue() || "—"}
       </span>
     ),
@@ -68,7 +74,7 @@ const columns = [
     header: "Address (ঠিকানা)",
     size: 200,
     cell: (info) => (
-      <span className="text-xs text-gray-600 leading-relaxed">
+      <span className="bn text-xs text-gray-600">
         {info.getValue()}
       </span>
     ),
