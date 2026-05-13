@@ -2,11 +2,16 @@
  * Extracts structured voter records from raw Bangla PDF text.
  *
  * PDF layout: 3 voters per row, each voter block has:
- *   XXXX. নাম: <name>       ভোটার নং: <id>
+ *   XXXX। নাম: <name>       ভোটার নং: <id>
  *   পিতা: <father>
  *   মাতা: <mother>
- *   পেশা: <occupation>,জন্ম তারিখ:<dob>
+ *   পেশা: <occupation>, জন্ম তারিখ: <dob>
  *   ঠিকানা: <address>
+ *
+ * Parsing strategy: locate each Bangla field label in the block text,
+ * sort the positions, then slice the value between consecutive labels.
+ * This avoids relying on newlines (which collapse after normalisation)
+ * or character-class exclusions (which silently drop partial matches).
  */
 
 import { VoterRecord, ParseResult } from "../types";
@@ -17,69 +22,129 @@ import {
   banglaToAsciiDigits,
 } from "./textNormalizer";
 
-// Match serial numbers like ০০০১. or 0001.
-const SERIAL_PATTERN =
-  /([০-৯\d]{4})\.\s*(?:নাম|িনাম|িনা|না)\s*[:：]\s*/;
+// ---------------------------------------------------------------------------
+// Label definitions — order does not matter; we sort by match position.
+// Each pattern anchors at the label keyword so it can't double-match.
+// ---------------------------------------------------------------------------
 
-// Voter number is a long digit string (Bengali or ASCII)
-const VOTER_NO_PATTERN = /(?:ভোটার|ভাটার|ভ[আ]টার)\s*নং\s*[:：]\s*([০-৯\d]{13,17})/;
+interface LabelDef {
+  key: string;
+  re: RegExp;
+}
 
-const FATHER_PATTERN = /পিতা\s*[:：]\s*([^মাতাপেশাঠিকানাভোটার\n]+)/;
-const MOTHER_PATTERN = /মাতা\s*[:：]\s*([^পিতাপেশাঠিকানাভোটার\n]+)/;
-const OCCUPATION_PATTERN = /পেশা\s*[:：]\s*([^,,জন্মজ\n]+)/;
-const DOB_PATTERN = /জন্ম\s*তারিখ\s*[:：]\s*([০-৯\d\/\-]+)/;
-const ADDRESS_PATTERN = /ঠিকানা\s*[:：]\s*([^\n০-৯\d]+(?:\n[^\n০-৯\d]+)*)/;
+const LABEL_DEFS: LabelDef[] = [
+  // Serial+name header: "০০০১। নাম:" or "0001. নাম:"
+  { key: "name",       re: /নাম\s*[:：]\s*/g },
+  // Voter number: ভোটার / ভাটার (CID variant)
+  { key: "voterNo",    re: /ভ[োা]টার\s*নং\s*[:：]\s*/g },
+  { key: "father",     re: /পিতা\s*[:：]\s*/g },
+  { key: "mother",     re: /মাতা\s*[:：]\s*/g },
+  { key: "occupation", re: /পেশা\s*[:：]\s*/g },
+  // DOB may appear on same line as occupation: "পেশা: ব্যবসা, জন্ম তারিখ: ০২/০৩/১৯৮৬"
+  { key: "dob",        re: /জন্ম\s*তারিখ\s*[:：]\s*/g },
+  { key: "address",    re: /ঠিকানা\s*[:：]\s*/g },
+];
 
-// Bangla serial pattern for text like "০০০১."
-const BANGLA_SERIAL_RE = /([০-৯]{4}|[0-9]{4})\./;
+interface LabelPosition {
+  key: string;
+  start: number;
+  valueStart: number; // index immediately after the colon+space
+}
 
-function extractMetadata(text: string) {
+/**
+ * Locate every known label in `text` and return them sorted by position.
+ * We use RegExp.exec with sticky lastIndex so each label is found once.
+ */
+function findLabels(text: string): LabelPosition[] {
+  const positions: LabelPosition[] = [];
+
+  for (const { key, re } of LABEL_DEFS) {
+    re.lastIndex = 0;
+    const m = re.exec(text);
+    if (m) {
+      positions.push({
+        key,
+        start: m.index,
+        valueStart: m.index + m[0].length,
+      });
+    }
+  }
+
+  return positions.sort((a, b) => a.start - b.start);
+}
+
+/**
+ * Given a sorted label list, return the value text for `key`:
+ * everything from valueStart up to the next label's start.
+ */
+function extractBetweenLabels(
+  text: string,
+  labels: LabelPosition[],
+  key: string
+): string {
+  const idx = labels.findIndex((l) => l.key === key);
+  if (idx === -1) return "";
+
+  const { valueStart } = labels[idx];
+  const nextStart = idx + 1 < labels.length ? labels[idx + 1].start : text.length;
+
+  return cleanFieldValue(text.slice(valueStart, nextStart));
+}
+
+// ---------------------------------------------------------------------------
+// Metadata extraction from header pages
+// ---------------------------------------------------------------------------
+
+function extractMetadata(text: string): ParseResult["metadata"] {
   const metadata: ParseResult["metadata"] = {};
 
-  const districtMatch = text.match(/জেলা\s*[:：]\s*([^\s\n]+)/);
-  if (districtMatch) metadata.district = cleanFieldValue(districtMatch[1]);
+  const m = (re: RegExp) => {
+    const match = text.match(re);
+    return match ? cleanFieldValue(match[1]) : undefined;
+  };
 
-  const upazilaMatch = text.match(/উপজেলা\/থানা\s*[:：]\s*([^\s\n]+)/);
-  if (upazilaMatch) metadata.upazila = cleanFieldValue(upazilaMatch[1]);
+  metadata.district    = m(/জেলা\s*[:：]\s*([^\s\n,]+)/);
+  metadata.upazila     = m(/উপজেলা(?:\/থানা)?\s*[:：]\s*([^\s\n,]+)/);
+  metadata.union       = m(/ইউনিয়ন[^:：\n]*[:：]\s*([^\n,]+)/);
+  metadata.voterArea   = m(/ভ[োা]টার\s+এলাকার\s+নাম\s*[:：]\s*([^\n]+)/);
+  metadata.publishDate = m(/প্রকাশের?\s+তারিখ\s*[:：]\s*([^\n]+)/);
 
-  const unionMatch = text.match(/ইউনিয়ন\/ওয়ার্ড[^:：\n]*[:：]\s*([^\n]+)/);
-  if (unionMatch) metadata.union = cleanFieldValue(unionMatch[1]);
-
-  const areaMatch = text.match(
-    /ভোটার\s+এলাকার\s+নাম\s*[:：]\s*([^\n]+)/
-  );
-  if (areaMatch) metadata.voterArea = cleanFieldValue(areaMatch[1]);
-
-  const areaCodeMatch = text.match(
-    /ভোটার\s+এলাকার\s+নম্বর\s*[:：]\s*([০-৯\d]+)/
-  );
-  if (areaCodeMatch) metadata.voterAreaCode = banglaToAsciiDigits(areaCodeMatch[1]);
-
-  const dateMatch = text.match(/প্রকাশের\s+তারিখ\s*[:：]\s*([^\n]+)/);
-  if (dateMatch) metadata.publishDate = cleanFieldValue(dateMatch[1]);
+  const codeMatch = text.match(/ভ[োা]টার\s+এলাকার\s+(?:নম্বর|কোড|নং)\s*[:：]\s*([০-৯\d]+)/);
+  if (codeMatch) metadata.voterAreaCode = banglaToAsciiDigits(codeMatch[1]);
 
   return metadata;
 }
 
+// ---------------------------------------------------------------------------
+// Split page text into per-voter chunks
+// ---------------------------------------------------------------------------
+
 /**
- * Split a page's text into individual voter chunks.
- * Each voter starts with a 4-digit serial like "০০০১."
+ * Each voter block starts with a 4-digit Bangla/ASCII serial followed by
+ * "।" (Devanagari danda) or "." then optional space then "নাম:".
+ * We find all such anchors and slice between them.
  */
-function splitIntoVoterChunks(text: string): Array<{ serial: string; block: string }> {
-  const chunks: Array<{ serial: string; block: string }> = [];
+function splitIntoVoterChunks(
+  text: string
+): Array<{ serial: string; block: string }> {
+  // Accept: ০০০১। নাম:  or  0001. নাম:  or  ০০০১. নাম:
+  const SPLIT_RE = /([০-৯\d]{3,4})\s*[।.]\s*নাম\s*[:：]/g;
 
-  // Match positions of all serial numbers in the text
-  const serialGlobalRe = /([০-৯]{4}|[0-9]{4})\.\s*(?:নাম|িনাম)/g;
-  let match: RegExpExecArray | null;
   const positions: Array<{ serial: string; start: number }> = [];
+  let match: RegExpExecArray | null;
 
-  while ((match = serialGlobalRe.exec(text)) !== null) {
-    positions.push({ serial: banglaToAsciiDigits(match[1]), start: match.index });
+  while ((match = SPLIT_RE.exec(text)) !== null) {
+    positions.push({
+      serial: banglaToAsciiDigits(match[1]),
+      start: match.index,
+    });
   }
 
+  const chunks: Array<{ serial: string; block: string }> = [];
   for (let i = 0; i < positions.length; i++) {
     const start = positions[i].start;
-    const end = i + 1 < positions.length ? positions[i + 1].start : text.length;
+    const end =
+      i + 1 < positions.length ? positions[i + 1].start : text.length;
     chunks.push({
       serial: positions[i].serial,
       block: text.slice(start, end),
@@ -89,52 +154,57 @@ function splitIntoVoterChunks(text: string): Array<{ serial: string; block: stri
   return chunks;
 }
 
-function extractField(text: string, pattern: RegExp): string {
-  const match = text.match(pattern);
-  if (!match) return "";
-  return cleanFieldValue(match[1]);
-}
+// ---------------------------------------------------------------------------
+// Parse a single voter block
+// ---------------------------------------------------------------------------
 
 function parseVoterBlock(
   serial: string,
   block: string,
   index: number
 ): VoterRecord | null {
-  const normalized = normalizeBanglaText(block);
+  // Collapse whitespace (including newlines) to single spaces so that
+  // label positions are stable regardless of line-break placement.
+  const text = normalizeBanglaText(block);
 
-  // Extract voter number
-  const voterNoMatch = normalized.match(
-    /(?:ভোটার|ভাটার)\s*নং\s*[:：]\s*([০-৯\d]{10,17})/
-  );
-  const voterNo = voterNoMatch
-    ? banglaToAsciiDigits(cleanFieldValue(voterNoMatch[1]))
-    : "";
+  const labels = findLabels(text);
 
-  // Extract name (text between নাম: and ভোটার নং:)
-  const nameMatch = normalized.match(
-    /(?:[০-৯\d]{4})\.\s*নাম\s*[:：]\s*([^ভোটার]+?)(?=ভাটার|ভোটার|$)/
-  );
-  const name = nameMatch ? cleanFieldValue(nameMatch[1]) : "";
+  // ---- name ---------------------------------------------------------------
+  const name = extractBetweenLabels(text, labels, "name");
 
-  // Father
-  const fatherMatch = normalized.match(/পিতা\s*[:：]\s*(.+?)(?=মাতা\s*[:：]|পেশা\s*[:：]|$)/);
-  const fatherName = fatherMatch ? cleanFieldValue(fatherMatch[1]) : "";
+  // ---- voter number -------------------------------------------------------
+  const rawVoterNo = extractBetweenLabels(text, labels, "voterNo");
+  // Keep only the digit run (drop any stray prefix characters)
+  const voterNoDigits = banglaToAsciiDigits(rawVoterNo).replace(/\D/g, "");
+  const voterNo = voterNoDigits.length >= 10 ? voterNoDigits : rawVoterNo;
 
-  // Mother
-  const motherMatch = normalized.match(/মাতা\s*[:：]\s*(.+?)(?=পেশা\s*[:：]|ঠিকানা\s*[:：]|পিতা\s*[:：]|$)/);
-  const motherName = motherMatch ? cleanFieldValue(motherMatch[1]) : "";
+  // ---- father / mother ----------------------------------------------------
+  const fatherName = extractBetweenLabels(text, labels, "father");
+  const motherName = extractBetweenLabels(text, labels, "mother");
 
-  // Occupation
-  const occupationMatch = normalized.match(/পেশা\s*[:：]\s*(.+?)(?=[,,]জন্ম|জ[ন্ম]|$)/);
-  const occupation = occupationMatch ? cleanFieldValue(occupationMatch[1]) : "";
+  // ---- occupation + DOB (may share one line) ------------------------------
+  let occupation = extractBetweenLabels(text, labels, "occupation");
+  let dob = extractBetweenLabels(text, labels, "dob");
 
-  // DOB — look for date pattern after জন্ম তারিখ or জন্ম
-  const dobMatch = normalized.match(/জন্ম\s*(?:তারিখ\s*)?[:：]?\s*([০-৯\d]{2}[\/\-][০-৯\d]{2}[\/\-][০-৯\d]{4})/);
-  const dob = dobMatch ? normalizeDate(dobMatch[1]) : "";
+  // If DOB was not found as a standalone label, it might be embedded in the
+  // occupation value: "ব্যবসা, জন্ম তারিখ: ০২/০৩/১৯৮৬"
+  if (!dob) {
+    const embedded = /জন্ম\s*তারিখ\s*[:：]\s*([^\s,]+)/.exec(occupation);
+    if (embedded) {
+      dob = cleanFieldValue(embedded[1]);
+      // Trim occupation at the জন্ম তারিখ label
+      occupation = cleanFieldValue(
+        occupation.slice(0, occupation.indexOf("জন্ম"))
+      );
+    }
+  }
 
-  // Address
-  const addressMatch = normalized.match(/ঠিকানা\s*[:：]\s*(.+?)(?=\s*[০-৯\d]{4}\.|$)/s);
-  const address = addressMatch ? cleanFieldValue(addressMatch[1]) : "";
+  // Strip trailing comma/space from occupation (e.g. "ব্যবসা,")
+  occupation = occupation.replace(/[,،,\s]+$/, "").trim();
+  dob = dob ? normalizeDate(dob) : "";
+
+  // ---- address ------------------------------------------------------------
+  const address = extractBetweenLabels(text, labels, "address");
 
   if (!name && !voterNo) return null;
 
@@ -151,6 +221,10 @@ function parseVoterBlock(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
 export function extractVoters(rawPages: string[]): ParseResult {
   const voters: VoterRecord[] = [];
   const errors: string[] = [];
@@ -161,7 +235,6 @@ export function extractVoters(rawPages: string[]): ParseResult {
     const pageText = rawPages[pageIdx];
     if (!pageText || pageText.trim().length < 20) continue;
 
-    // Extract metadata from first content page
     if (pageIdx <= 3) {
       const pageMeta = extractMetadata(pageText);
       metadata = { ...pageMeta, ...metadata };
@@ -174,7 +247,9 @@ export function extractVoters(rawPages: string[]): ParseResult {
         const voter = parseVoterBlock(serial, block, globalIndex++);
         if (voter) voters.push(voter);
       } catch (err) {
-        errors.push(`Page ${pageIdx + 1}, serial ${serial}: ${String(err)}`);
+        errors.push(
+          `Page ${pageIdx + 1}, serial ${serial}: ${String(err)}`
+        );
       }
     }
   }
