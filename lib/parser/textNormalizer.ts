@@ -3,39 +3,49 @@
  * Handles common encoding artifacts, broken glyphs, and spacing issues.
  */
 
-// Map common CID artifacts that appear in pdfjs text extraction
+// Map common CID artifacts that appear in pdfminer/server-side text extraction.
+// Font: OZHNWW+Bangla (CIDFontType2, Identity-H, Bijoy-style Bengali).
+// CIDs marked [CORRECTED] differ from the incomplete ToUnicode table in the PDF.
 const CID_MAP: Record<string, string> = {
-  "(cid:207)": "ো", // ো
-  "(cid:206)": "ি", // ি
-  "(cid:208)": "ৈ", // ৈ
-  "(cid:203)": "া", // া
-  "(cid:204)": "ু", // ু
-  "(cid:205)": "ূ", // ূ
-  "(cid:209)": "ো", // ো
-  "(cid:210)": "ৌ", // ৌ
-  "(cid:253)": "ঞ", // ঞ
-  "(cid:295)": "দ্র", // দ্র
-  "(cid:296)": "স্ন", // স্ন
-  "(cid:279)": "দ্দ", // দ্দ
-  "(cid:290)": "ষ্ট", // ষ্ট
-  "(cid:303)": "ন্য", // ন্য
-  "(cid:308)": "প্র", // প্র
-  "(cid:309)": "ব্র", // ব্র
-  "(cid:314)": "ব্দ", // ব্দ
-  "(cid:324)": "ম্ব", // ম্ব
-  "(cid:327)": "ন্ন", // ন্ন
-  "(cid:332)": "দ্ধ", // দ্ধ
-  "(cid:340)": "শ্চ", // শ্চ
-  "(cid:344)": "শ্র", // শ্র
-  "(cid:349)": "ষ্ণ", // ষ্ণ
-  "(cid:350)": "স্ট", // স্ট
-  "(cid:353)": "ষ্প", // ষ্প
-  "(cid:361)": "জ্ঞ", // জ্ঞ
-  "(cid:383)": "ন্দ্র", // ন্দ্র
-  "(cid:384)": "ক্র", // ক্র
+  // Vowel signs (matras) — confirmed from ToUnicode table
+  "(cid:203)": "া", // আ-কার
+  "(cid:204)": "ু", // উ-কার
+  "(cid:205)": "ূ", // ঊ-কার
+  "(cid:206)": "ি", // ই-কার (real ি; reph র্ shares this slot in pdfjs path)
+  "(cid:207)": "ে", // এ-কার pre-base glyph [CORRECTED: ToUnicode had ো]
+  "(cid:208)": "ৈ", // ঐ-কার
+  "(cid:209)": "ো", // ও-কার (composite)
+  "(cid:210)": "ৌ", // ঔ-কার
+
+  // Conjuncts — confirmed / corrected via context analysis
+  "(cid:251)": "ঞ্চ", // ঞ্চ conjunct (অঞ্চল) [NEW]
+  "(cid:253)": "ঞ্জ", // ঞ্জ conjunct (কেরানীগঞ্জ) [CORRECTED: was ঞ]
+  "(cid:276)": "ত্র", // ত্র conjunct (ছাত্র/ছাত্রী) [NEW]
+  "(cid:279)": "দ্দ", // দ্দ conjunct
+  "(cid:290)": "ন্ত", // ন্ত conjunct (চূড়ান্ত) [CORRECTED: was ষ্ট]
+  "(cid:293)": "ন্ম", // ন্ম conjunct (জন্ম) [NEW]
+  "(cid:295)": "ন্দ্র", // ন্দ্র conjunct (চন্দ্র) [CORRECTED: was দ্র]
+  "(cid:296)": "স্ন", // স্ন conjunct
+  "(cid:303)": "ন্য", // ন্য conjunct
+  "(cid:308)": "প্র", // প্র conjunct
+  "(cid:309)": "ব্র", // ব্র conjunct
+  "(cid:314)": "ব্দ", // ব্দ conjunct
+  "(cid:324)": "ম্ব", // ম্ব conjunct
+  "(cid:327)": "ন্ন", // ন্ন conjunct
+  "(cid:332)": "দ্ধ", // দ্ধ conjunct
+  "(cid:340)": "শ্চ", // শ্চ conjunct
+  "(cid:344)": "শ্র", // শ্র conjunct
+  "(cid:349)": "ষ্ণ", // ষ্ণ conjunct
+  "(cid:350)": "স্ট", // স্ট conjunct
+  "(cid:353)": "ষ্প", // ষ্প conjunct
+  "(cid:361)": "ড়", // ড় (RRA) [CORRECTED: was জ্ঞ]
+  "(cid:383)": "ন্দ্র", // ন্দ্র conjunct (longer form)
+  "(cid:384)": "ক্র", // ক্র conjunct
   "(cid:385)": "র", // র
-  "(cid:390)": "হ্ন", // হ্ন
-  "(cid:419)": "ক", // ক
+
+  // Single consonants / finals
+  "(cid:390)": "হ", // হ consonant [CORRECTED: was হ্ন]
+  "(cid:419)": "ক", // ক consonant
 };
 
 // Bangla numeral to ASCII
